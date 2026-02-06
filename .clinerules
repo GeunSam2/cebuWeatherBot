@@ -1,0 +1,286 @@
+# PAGASA Weather Alert Bot - Project Context
+
+## Project Overview
+Weather alert detection system for Cebu/Lapu-Lapu City, Philippines using PAGASA data.
+- **Target Users**: Tourism operators, local teams in Cebu
+- **Current Phase**: Phase 1 (PoC) - COMPLETED ✅
+- **Next Phase**: Phase 2 (Telegram Bot Integration)
+
+## Architecture
+
+### Core Components
+1. **HTML Scraping** - Text-based parsing of PAGASA web pages
+   - `parse_tcws_bulletin()` - Tropical Cyclone Wind Signals
+   - `parse_visayas_forecast()` - Heavy rainfall, thunderstorms, strong winds
+
+2. **PDF Analysis** (NEW) - Automatic fallback for exact TCWS signal numbers
+   - `download_and_extract_pdf_text()` - Downloads PDF bulletins
+   - `parse_tcws_from_pdf()` - Extracts signal assignments from PDF text
+   - `fetch_pdf_if_needed()` - Triggers when HTML shows "ACTIVE" typhoon signal
+
+3. **Data Model** - `AlertFinding` dataclass
+   - Unified severity scale (1-5) across all alert types
+   - Human-readable labels (CATASTROPHIC, SEVERE, MODERATE, MINOR, MINIMAL)
+   - Coverage types: city_specific (Lapu-Lapu), province_wide (Cebu)
+   - Validity time ranges: `valid_from` and `valid_until` fields
+
+4. **Output Formats**
+   - Human-readable: Emoji indicators, dual timezone (KST/PHST), action recommendations, validity time ranges
+   - JSON mode: `--json` flag for automation/integration with validity times
+
+### Data Sources
+- **Severe Weather Bulletin**: https://bagong.pagasa.dost.gov.ph/tropical-cyclone/severe-weather-bulletin
+- **Visayas Regional Forecast**: https://bagong.pagasa.dost.gov.ph/regional-forecast/visprsd
+- **PDF Bulletins**: https://pubfiles.pagasa.dost.gov.ph/tamss/weather/bulletin_*.pdf
+
+## Key Design Decisions
+
+### Why PDF Parsing Instead of Image Analysis?
+**Decision**: Parse PDF bulletins for exact TCWS signal numbers
+**Rationale**:
+- PDF contains text (easier to parse than OCR)
+- More reliable than image analysis
+- Official PAGASA format with structured data
+- Lighter dependency (PyPDF2 vs opencv/pytesseract)
+
+**Implementation**: Lines 579-816 in pagasa_alert_poc.py
+- Automatically triggered when HTML shows "ACTIVE" typhoon signal
+- Falls back gracefully if PDF unavailable
+- 3-pattern matching: block-based, inline, context-based
+
+### Why Text-Based Parsing?
+**Decision**: Extract plain text from HTML, then parse with regex
+**Rationale**:
+- Resilient to HTML structure changes
+- PAGASA website frequently updates layout
+- Avoids DOM selector fragility
+
+**Implementation**: `SimpleHTMLTextExtractor` class (lines 141-156)
+
+### Terminology Improvements
+**Changed for clarity**:
+- `TCWS` → `TYPHOON_WIND` (clearer alert type)
+- `area_match: "fallback"` → `area_match: "province_wide"`
+- `area_match: "direct"` → `area_match: "city_specific"`
+- Added severity emojis: 🔴 🟠 🟡 🔵 ⚪
+
+## Development History
+
+### Session 1: Initial Implementation
+1. Created PoC with HTML scraping
+2. Implemented TCWS, rainfall, thunderstorm detection
+3. Added severity classification (OK/WATCH/WARNING/EMERGENCY)
+
+### Session 2: Improvements
+1. Fixed URL issues (switched to bagong.pagasa.dost.gov.ph)
+2. Added `Accept-Encoding: identity` header to fix compression
+3. Improved TCWS detection to avoid false positives from explanatory text
+4. Enhanced rainfall parsing with block-based approach
+
+### Session 3: User Experience
+1. Redesigned output format (headline → alerts → actions → sources)
+2. Added dual timezone display (KST/PHST)
+3. Implemented JSON output mode with `--json` flag
+4. Added weather system and metadata extraction
+
+### Session 4: Unified Severity & PDF Parsing
+1. Added unified severity scale (1-5) across all alert types
+2. **Implemented PDF analysis** to get exact TCWS signal numbers
+   - User asked: "Can we analyze the image?" → Chose PDF parsing instead
+   - Successfully extracts Signal #2 from PDF when HTML shows "ACTIVE"
+3. Updated README with PDF parsing documentation
+
+### Session 5: Validity Time Ranges & Accuracy Improvements
+1. Added validity time range display for each alert
+   - User requested: Show when each alert is in effect (e.g., typhoon warning period)
+   - Added `valid_from` and `valid_until` fields to `AlertFinding` dataclass
+2. Implemented time extraction across all parsers
+   - `extract_validity_times()` helper function (lines 158-197)
+   - Updated `parse_tcws_bulletin()` to extract validity times
+   - Updated `parse_visayas_forecast()` to extract validity times
+   - Updated `parse_tcws_from_pdf()` to extract and return validity times
+3. Updated output formats to display validity periods
+   - Human-readable: "Valid: <from> → <until>" or "Next update: <time>" display
+   - JSON: Added `valid_from` and `valid_until` fields
+4. Created `.clinerules` file for project context preservation
+5. **Fixed critical accuracy issues** (based on live data validation)
+   - **PDF TCWS parsing**: Now extracts only from "TCWS IN EFFECT" section (avoids "Wind Signal No. 2" in hazard descriptions)
+   - **Heavy Rainfall valid_until**: Uses "next warning to be issued at..." instead of page footer times
+   - **HTML TCWS parsing**: Only checks Cebu in TCWS section (not Track/Gale Warning/Storm Surge sections)
+   - Result: Eliminated false positive TCWS alerts when Cebu not actually under wind signal
+6. **Field separation and date normalization** (Part 2)
+   - **Added `next_update` field**: Separated "next bulletin time" from "expiration time" (`valid_until`)
+   - **HRW parsing update**: "next warning to be issued at" now stored in `next_update`, not `valid_until`
+   - **Date normalization**: Added `normalize_relative_dates()` to convert "Today"/"Tomorrow" to absolute dates
+   - **Output improvement**: "Next update: 02:00 PM 06 February 2026" instead of "Valid: ... → 02:00 PM Today"
+   - Result: Clearer distinction between validity period and next bulletin schedule
+7. **TCWS false negative prevention** (Part 3)
+   - **Removed overall_area_match gate**: Signal map presence now always triggers PDF analysis
+   - **PDF-first strategy**: When signal map exists, always check PDF TCWS section for Cebu inclusion
+   - **Area match from PDF**: ACTIVE placeholder uses area_match="unknown", updated from PDF results
+   - **Smart filtering**: If PDF doesn't find Cebu in TCWS section, ACTIVE placeholder is removed
+   - Result: Prevents false negatives when Cebu only in PDF/map but not in HTML text, while maintaining false positive prevention
+
+## Known Limitations
+
+### Current
+- **PyPDF2 required** - No longer stdlib-only (acceptable trade-off for accuracy)
+- **Single location** - Only Cebu/Lapu-Lapu City supported
+- **No state tracking** - Can't detect if alert is new or already notified
+- **No scheduling** - Must be run manually or via cron
+
+### Future Improvements (Phase 2+)
+- Telegram bot integration
+- SQLite for alert history
+- APScheduler for automatic polling (30-60 min intervals)
+- Multi-location support
+
+## Testing Strategy
+
+### Self-Tests (run_self_test)
+1. TCWS detection with signal map
+2. Rainfall warning parsing
+3. Text normalization
+
+### Manual Testing
+```bash
+# Normal run
+pipenv run python pagasa_alert_poc.py
+
+# JSON output
+pipenv run python pagasa_alert_poc.py --json
+
+# Debug mode (shows PDF parsing)
+DEBUG=1 pipenv run python pagasa_alert_poc.py
+```
+
+### Exit Codes
+- `0` - OK (no alerts)
+- `1` - WARNING or WATCH
+- `2` - EMERGENCY
+
+## Code Structure
+
+### Main Flow (lines 905-970)
+```python
+1. Run self-tests
+2. Fetch Severe Weather Bulletin → parse_tcws_bulletin()
+3. Fetch Visayas Forecast → parse_visayas_forecast()
+4. [NEW] Check for ACTIVE typhoon signals → fetch_pdf_if_needed()
+5. Classify overall severity → classify_overall_severity()
+6. Render report → render_report()
+7. Exit with appropriate code
+```
+
+### Key Functions
+- `normalize_relative_dates()` - Lines 179-211 (NEW Session 5.2) - Converts Today/Tomorrow to absolute dates
+- `extract_validity_times()` - Lines 303-344 (NEW Session 5)
+- `parse_tcws_bulletin()` - Lines 346-408
+- `parse_visayas_forecast()` - Lines 364-548
+- `fetch_pdf_if_needed()` - Lines 952-1022
+- `parse_tcws_from_pdf()` - Lines 833-918
+- `render_report()` - Lines 598-756
+
+## Dependencies
+- **PyPDF2** - PDF text extraction (Phase 1)
+- **requests** - HTTP (Phase 2 - Telegram bot)
+- **APScheduler** - Scheduled polling (Phase 2)
+
+## Next Steps (Phase 2)
+
+### Telegram Bot Integration
+1. Add `python-telegram-bot` or `requests` for Telegram API
+2. Replace `render_report()` with `send_telegram_message()`
+3. Format output with Telegram markdown
+4. Add bot token configuration (environment variable)
+
+### State Tracking
+1. Add SQLite database for alert history
+2. Track: alert_id, timestamp, alert_type, level, notified (bool)
+3. Skip notifications for duplicate alerts (same alert within 6 hours)
+
+### Scheduler
+1. Add APScheduler for automatic polling
+2. Interval: 30-60 minutes (configurable)
+3. Error handling for network failures
+4. Logging to file
+
+### Configuration
+Create `config.py`:
+```python
+TELEGRAM_BOT_TOKEN = os.getenv("TELEGRAM_BOT_TOKEN")
+TELEGRAM_CHAT_ID = os.getenv("TELEGRAM_CHAT_ID")
+POLL_INTERVAL_MINUTES = 30
+DB_PATH = "alerts.db"
+```
+
+## Common Tasks
+
+### Add new alert type
+1. Add pattern to `parse_visayas_forecast()` or create new parser
+2. Add alert type to `AlertFinding.get_alert_name()`
+3. Add severity mapping to `AlertFinding.get_severity_level()`
+4. Update `classify_overall_severity()` rules
+5. Add test case to `run_self_test()`
+
+### Modify output format
+- **Human-readable**: Edit `render_report()` lines 499-576
+- **JSON**: Edit `render_report()` lines 469-497
+
+### Change target location
+- Edit `check_area_match()` lines 84-99
+- Update normalized text patterns
+
+## Debugging Tips
+
+### PDF parsing not working?
+```bash
+DEBUG=1 pipenv run python pagasa_alert_poc.py
+```
+Check for:
+- `[DEBUG] Found PDF link:` - PDF URL detected
+- `[DEBUG] Downloaded PDF: X bytes` - PDF downloaded
+- `[DEBUG] Found Signal #N block` - TCWS sections found
+- `[SUCCESS] Updated ACTIVE → N signal assignment(s)` - Success
+
+### No alerts detected?
+1. Check if Cebu is mentioned: `check_area_match(text)` should not return "none"
+2. Verify URLs are accessible in browser
+3. Check HTML structure hasn't changed (use DEBUG=1)
+
+### Wrong severity classification?
+- Check `classify_overall_severity()` lines 408-452
+- Verify alert type matches expected pattern
+- Check severity level mapping in `get_severity_level()`
+
+## API Contracts
+
+### AlertFinding JSON Output
+```json
+{
+  "alert_name": "Typhoon Wind Signal",
+  "alert_type": "TYPHOON_WIND",
+  "level": "Signal #2",
+  "severity": 4,
+  "severity_label": "SEVERE",
+  "coverage": "province_wide",
+  "coverage_description": "Cebu Province (includes Lapu-Lapu)",
+  "source": "https://bagong.pagasa.dost.gov.ph/...",
+  "issued_at": "11:00 AM 06 February 2026",  // Optional
+  "warning_no": "8",  // Optional
+  "weather_system": "Tropical Storm (TS) BASYANG",  // Optional
+  "valid_from": "11:00 AM 06 February 2026",  // Optional - when alert becomes effective
+  "valid_until": "05:00 AM, 7 February, 2026",  // Optional - when alert expires
+  "next_update": "02:00 PM 06 February 2026"  // Optional - when next bulletin will be issued
+}
+```
+
+### Exit Codes
+- `0` - OK (safe to proceed)
+- `1` - WARNING/WATCH (monitor conditions)
+- `2` - EMERGENCY (take action)
+
+## References
+- PAGASA Official: https://www.pagasa.dost.gov.ph/
+- TCWS Meanings: https://www.pagasa.dost.gov.ph/information/about-tropical-cyclone
+- Heavy Rainfall Warning System: https://www.pagasa.dost.gov.ph/information/heavy-rainfall-warning-system
